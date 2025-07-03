@@ -1,0 +1,169 @@
+plugins {
+    id 'com.github.johnrengelman.shadow' version "8.1.1"
+    id 'java'
+    id 'java-library'
+    id 'project-report'
+    id 'maven-publish'
+    id 'idea'
+    id 'signing'
+}
+
+java {
+    withJavadocJar()
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+            {
+
+                mavenCentral()
+            }
+}
+
+
+sourceCompatibility = 11
+group = 'io.github.mderevyankoaqa'
+version = '1.0'
+
+def title = 'JMeterESListener'
+def archiveName = 'jmeter-es-listener-plugin'
+
+
+// There's a bug in JMeter leaving extra metadata right now. This is a workaround.
+abstract class JMeterRule implements ComponentMetadataRule {
+    void execute(ComponentMetadataContext context) {
+        context.details.allVariants { variant ->
+            variant.withDependencies { dependencies ->
+                dependencies.removeAll { it.group == "org.apache.jmeter" && it.name == "bom" }
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation group: 'org.apache.jmeter', name: 'ApacheJMeter_core', version: '5.6.3'
+    implementation group: 'org.apache.jmeter', name: 'ApacheJMeter_java', version: '5.6.3'
+    implementation group: 'org.apache.jmeter', name: 'ApacheJMeter_components', version: '5.6.3'
+    implementation group: 'org.apache.jmeter', name: 'jorphan', version: '5.6.3'
+    implementation group: 'com.influxdb', name: 'influxdb-client-java', version: '6.12.0'
+    implementation group: 'org.apache.commons', name: 'commons-lang3', version: '3.14.0'
+    implementation group: 'org.apache.jmeter', name: 'ApacheJMeter_http', version: '5.6.3'
+
+    // Elasticsearch
+    implementation group: 'org.elasticsearch.client', name: 'elasticsearch-rest-high-level-client', version: '7.17.17'
+
+    components {
+        withModule("org.apache.jmeter:ApacheJMeter_core", JMeterRule)
+        withModule("org.apache.jmeter:ApacheJMeter_java", JMeterRule)
+        withModule("org.apache.jmeter:ApacheJMeter_components", JMeterRule)
+        withModule("org.apache.jmeter:jorphan", JMeterRule)
+        withModule("org.apache.jmeter:ApacheJMeter", JMeterRule)
+        withModule("org.apache.jmeter:ApacheJMeter_http", JMeterRule)
+    }
+}
+
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': title,
+                'Implementation-Version': archiveVersion,
+                'Main-Class': 'io.github.mderevyankoaqa.es.visualizer.ElasticApiKeyBackendClient'
+    }
+
+    // Sets Classifier as sources.
+    archiveClassifier.set("sources")
+}
+
+shadowJar {
+
+    // Removes of the useless links.
+    minimize()
+
+
+    // Fix of the Class path contains multiple SLF4J bindings.
+    minimize
+            {
+                exclude(dependency('org.slf4j:.*:.*'))
+                exclude(dependency('org.codehaus.groovy:.*:.*'))
+            }
+    archiveBaseName.set(archiveName)
+
+    manifest {
+        inheritFrom project.tasks.jar.manifest
+    }
+
+    // Removes the 'All' in Classifier to have downloadable artifact by default.
+    archiveClassifier.set(null)
+
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            groupId = 'io.github.mderevyankoaqa'
+            artifactId = archiveName
+            version = version
+
+            from components.java
+            versionMapping {
+                usage('java-api') {
+                    fromResolutionOf('runtimeClasspath')
+                }
+                usage('java-runtime') {
+                    fromResolutionResult()
+                }
+            }
+            pom {
+                name = archiveName
+                description = 'Influx DB v2.0 listener plugin for Apache JMeter. Provides the possibility to see the online dashboard (aggregation table, errors, the response body of failures).'
+                url = 'https://github.com/mderevyankoaqa/jmeter-es-listener-plugin'
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'mderevyanko'
+                        name = 'Mike Derevianko'
+                        email = 'm.v.derevyanko@gmail.com'
+                    }
+
+                }
+                scm {
+                    connection = 'scm:git:git:github.com/mderevyankoaqa/jmeter-es-listener-plugin.git'
+                    developerConnection = 'scm:git:ssh://github.com/mderevyankoaqa/jmeter-es-listener-plugin.git'
+                    url = 'https://github.com/mderevyankoaqa/jmeter-es-listener-plugin'
+                }
+            }
+        }
+    }
+
+
+    repositories {
+        maven {
+            name = "OSSRH"
+
+            url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
+
+            credentials {
+                username = project.properties["ossrhUsername"]
+                password = project.properties["ossrhPassword"]
+            }
+        }
+    }
+}
+
+
+signing {
+    sign publishing.publications.mavenJava
+}
+
+javadoc {
+    if(JavaVersion.current().isJava9Compatible()) {
+        options.addBooleanOption('html5', true)
+    }
+}
