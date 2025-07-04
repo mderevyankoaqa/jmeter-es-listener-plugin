@@ -15,9 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 
 public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
 
@@ -26,6 +27,8 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
     public static final String ENVIRONMENT = "environment";
     public static final String TYPE = "type";
     public static final String TRANSACTION_PREFIX = "transaction.controller.prefix";
+    public static final String BATCH_SIZE = "batch.size";
+    public static final String SAVE_RESPONSE_BODY = "save.response.body";
 
     private CloseableHttpClient httpClient;
     private String elasticUrl;
@@ -33,6 +36,11 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
     private String environment;
     private String type;
     private String transactionControllerPrefix;
+    private int batchSize;
+    private String saveResponseBodyMode;
+    private String runId;
+
+    private final List<String> jsonBatch = new ArrayList<>();
 
     private static final Logger log = LoggerFactory.getLogger(ElasticApiKeyBackendClient.class);
 
@@ -43,7 +51,9 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         arguments.addArgument(ES_API_KEY, "YOUR_API_KEY");
         arguments.addArgument(ENVIRONMENT, "perf_cmp_2");
         arguments.addArgument(TYPE, "api");
-        arguments.addArgument(TRANSACTION_PREFIX, "TC"); // default prefix
+        arguments.addArgument(TRANSACTION_PREFIX, "TC");
+        arguments.addArgument(BATCH_SIZE, "10");
+        arguments.addArgument(SAVE_RESPONSE_BODY, "onError"); // onError, always, off
         return arguments;
     }
 
@@ -54,6 +64,10 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         this.environment = context.getParameter(ENVIRONMENT);
         this.type = context.getParameter(TYPE);
         this.transactionControllerPrefix = context.getParameter(TRANSACTION_PREFIX);
+        this.batchSize = context.getIntParameter(BATCH_SIZE, 10);
+        this.saveResponseBodyMode = context.getParameter(SAVE_RESPONSE_BODY, "onError");
+
+        this.runId = UUID.randomUUID().toString(); // generate a GUID for this test run
 
         RequestConfig config = RequestConfig.custom()
                 .setConnectTimeout(5000)
@@ -72,25 +86,24 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         }
     }
 
-    /**
-     * Recursively process SampleResult tree
-     */
     private void processSampleResultRecursively(SampleResult result, String parentLabel) {
         String label = result.getSampleLabel();
         boolean success = result.isSuccessful();
         long responseTime = result.getTime();
         String responseCode = result.getResponseCode();
         String responseMessage = result.getResponseMessage();
-
         String timestamp = Instant.ofEpochMilli(result.getTimeStamp()).toString();
 
+        String responseBody = null;
 
-        String errorBody = null;
-        if (!success) {
-            errorBody = result.getResponseDataAsString();
-            if (errorBody != null && errorBody.length() > 2048) {
-                errorBody = errorBody.substring(0, 2048) + "...";
-            }
+        if ("always".equalsIgnoreCase(saveResponseBodyMode)) {
+            responseBody = result.getResponseDataAsString();
+        } else if ("onError".equalsIgnoreCase(saveResponseBodyMode) && !success) {
+            responseBody = result.getResponseDataAsString();
+        }
+
+        if (responseBody != null && responseBody.length() > 2048) {
+            responseBody = responseBody.substring(0, 2048) + "...";
         }
 
         StringBuilder assertionMessages = new StringBuilder();
@@ -108,27 +121,27 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         int activeThreads = JMeterContextService.getNumberOfThreads();
         int finishedThreads = startedThreads - activeThreads;
 
-        // detect if this is a Transaction Controller:
         boolean isTransactionController = label.startsWith(transactionControllerPrefix);
 
         String json = String.format(
-                "{\n" +
-                        "  \"threadName\": \"%s\",\n" +
-                        "  \"label\": \"%s\",\n" +
-                        "  \"parentLabel\": \"%s\",\n" +
-                        "  \"isTransactionController\": %b,\n" +
-                        "  \"success\": %b,\n" +
-                        "  \"responseTime\": %d,\n" +
-                        "  \"responseCode\": \"%s\",\n" +
-                        "  \"responseMessage\": \"%s\",\n" +
-                        "  \"errorBody\": \"%s\",\n" +
-                        "  \"assertions\": \"%s\",\n" +
-                        "  \"time_stamp\": \"%s\",\n" +  // <=== changed from %d to %s
-                        "  \"activeThreads\": %d,\n" +
-                        "  \"startedThreads\": %d,\n" +
-                        "  \"finishedThreads\": %d,\n" +
-                        "  \"environment\": \"%s\",\n" +
-                        "  \"type\": \"%s\"\n" +
+                "{" +
+                        "\"threadName\":\"%s\"," +
+                        "\"label\":\"%s\"," +
+                        "\"parentLabel\":\"%s\"," +
+                        "\"isTransactionController\":%b," +
+                        "\"success\":%b," +
+                        "\"responseTime\":%d," +
+                        "\"responseCode\":\"%s\"," +
+                        "\"responseMessage\":\"%s\"," +
+                        "\"responseBody\":\"%s\"," +
+                        "\"assertions\":\"%s\"," +
+                        "\"time_stamp\":\"%s\"," +
+                        "\"activeThreads\":%d," +
+                        "\"startedThreads\":%d," +
+                        "\"finishedThreads\":%d," +
+                        "\"environment\":\"%s\"," +
+                        "\"type\":\"%s\"," +
+                        "\"run_id\":\"%s\"" +  // add run_id to JSON
                         "}",
                 safe(result.getThreadName()),
                 safe(label),
@@ -138,32 +151,48 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
                 responseTime,
                 safe(responseCode),
                 safe(responseMessage),
-                safe(errorBody),
+                safe(responseBody),
                 safe(assertionMessages.toString()),
-                timestamp,   // ISO8601 string
+                timestamp,
                 activeThreads,
                 startedThreads,
                 finishedThreads,
                 safe(environment),
-                safe(type)
+                safe(type),
+                runId // insert the GUID
         );
 
-        sendToElastic(json);
+        synchronized (jsonBatch) {
+            jsonBatch.add(json);
+            if (jsonBatch.size() >= batchSize) {
+                flushBatch();
+            }
+        }
 
-        // recursively process children
+        // process children
         for (SampleResult child : result.getSubResults()) {
-            processSampleResultRecursively(child, label); // propagate parent label
+            processSampleResultRecursively(child, label);
         }
     }
 
-    private void sendToElastic(String json) {
-        try {
-            HttpPost request = new HttpPost(elasticUrl);
-            request.setHeader("Content-Type", "application/json");
-            request.setHeader("Authorization", "ApiKey " + apiKey);
-            request.setEntity(new StringEntity(json, StandardCharsets.UTF_8));
+    private void flushBatch() {
+        if (jsonBatch.isEmpty()) {
+            return;
+        }
 
-            log.info("Sending to Elasticsearch: {}", json);
+        try {
+            StringBuilder bulkPayload = new StringBuilder();
+            for (String doc : jsonBatch) {
+                bulkPayload.append("{\"index\":{}}\n");
+                bulkPayload.append(doc).append("\n");
+            }
+
+            HttpPost request = new HttpPost(elasticUrl);
+            request.setHeader("Content-Type", "application/x-ndjson");
+            request.setHeader("Authorization", "ApiKey " + apiKey);
+            request.setEntity(new StringEntity(bulkPayload.toString(), StandardCharsets.UTF_8));
+
+            log.info("Sending bulk payload to Elasticsearch with {} items", jsonBatch.size());
 
             try (var response = httpClient.execute(request)) {
                 int statusCode = response.getStatusLine().getStatusCode();
@@ -172,19 +201,23 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
                         : "";
                 log.info("Elasticsearch response: statusCode={}, body={}", statusCode, responseBody);
             }
+
         } catch (Exception e) {
-            log.error("Error sending data to Elasticsearch: {}", e.getMessage(), e);
+            log.error("Error sending batch to Elasticsearch: {}", e.getMessage(), e);
+        } finally {
+            jsonBatch.clear();
         }
     }
 
     @Override
     public void teardownTest(BackendListenerContext context) throws Exception {
+        flushBatch();
         if (httpClient != null) {
             httpClient.close();
         }
     }
 
     private String safe(String s) {
-        return s == null ? "" : s.replace("\"", "\\\"");
+        return s == null ? "" : s.replace("\"", "\\\"").replace("\n", " ");
     }
 }
