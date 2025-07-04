@@ -20,8 +20,18 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * Backend listener for JMeter that sends sample results in bulk to Elasticsearch using API Key authentication.
+ * <p>
+ * This class extends AbstractBackendListenerClient and processes JMeter sample results recursively,
+ * batching them and sending to the configured Elasticsearch _bulk API endpoint.
+ * <p>
+ * It supports configuration parameters such as Elasticsearch URL, API Key, environment, test type,
+ * batch size, transaction controller prefix, and response body saving mode.
+ */
 public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
 
+    // Parameter names for Backend Listener configuration
     public static final String ES_URL = "es.url";
     public static final String ES_API_KEY = "es.api.key";
     public static final String ENVIRONMENT = "environment";
@@ -44,6 +54,12 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
 
     private static final Logger log = LoggerFactory.getLogger(ElasticApiKeyBackendClient.class);
 
+    /**
+     * Provides the default parameters for this backend listener.
+     * These parameters are configurable in JMeter's UI when adding this listener.
+     *
+     * @return Arguments containing the default configuration parameters.
+     */
     @Override
     public Arguments getDefaultParameters() {
         Arguments arguments = new Arguments();
@@ -53,10 +69,17 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         arguments.addArgument(TYPE, "api");
         arguments.addArgument(TRANSACTION_PREFIX, "TC");
         arguments.addArgument(BATCH_SIZE, "10");
-        arguments.addArgument(SAVE_RESPONSE_BODY, "onError"); // onError, always, off
+        arguments.addArgument(SAVE_RESPONSE_BODY, "onError"); // options: onError, always, off
         return arguments;
     }
 
+    /**
+     * Initializes the backend listener with configuration from JMeter and prepares the HTTP client.
+     * Generates a unique run ID (UUID) for grouping all results from this test run.
+     *
+     * @param context BackendListenerContext providing the configured parameters.
+     * @throws Exception if HTTP client setup fails.
+     */
     @Override
     public void setupTest(BackendListenerContext context) throws Exception {
         this.elasticUrl = context.getParameter(ES_URL);
@@ -67,8 +90,10 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         this.batchSize = context.getIntParameter(BATCH_SIZE, 10);
         this.saveResponseBodyMode = context.getParameter(SAVE_RESPONSE_BODY, "onError");
 
-        this.runId = UUID.randomUUID().toString(); // generate a GUID for this test run
+        // Generate a unique run ID for this test execution
+        this.runId = UUID.randomUUID().toString();
 
+        // Configure HTTP client timeouts
         RequestConfig config = RequestConfig.custom()
                 .setConnectTimeout(5000)
                 .setSocketTimeout(5000)
@@ -79,6 +104,13 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
                 .build();
     }
 
+    /**
+     * Handles batches of sample results delivered by JMeter.
+     * Each SampleResult is processed recursively to include child samples.
+     *
+     * @param sampleResults List of SampleResult objects from JMeter.
+     * @param context       BackendListenerContext (not used here).
+     */
     @Override
     public void handleSampleResults(List<SampleResult> sampleResults, BackendListenerContext context) {
         for (SampleResult sample : sampleResults) {
@@ -86,6 +118,13 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         }
     }
 
+    /**
+     * Recursively processes a SampleResult and its children, converting each to JSON and
+     * adding it to the batch. When batch size is reached, flushes the batch to Elasticsearch.
+     *
+     * @param result      The current SampleResult to process.
+     * @param parentLabel The label of the parent sample, or null if top-level.
+     */
     private void processSampleResultRecursively(SampleResult result, String parentLabel) {
         String label = result.getSampleLabel();
         boolean success = result.isSuccessful();
@@ -96,16 +135,19 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
 
         String responseBody = null;
 
+        // Decide whether to save response body based on configured mode
         if ("always".equalsIgnoreCase(saveResponseBodyMode)) {
             responseBody = result.getResponseDataAsString();
         } else if ("onError".equalsIgnoreCase(saveResponseBodyMode) && !success) {
             responseBody = result.getResponseDataAsString();
         }
 
+        // Limit response body size to 2048 chars to avoid large payloads
         if (responseBody != null && responseBody.length() > 2048) {
             responseBody = responseBody.substring(0, 2048) + "...";
         }
 
+        // Collect assertion failure/error messages if any
         StringBuilder assertionMessages = new StringBuilder();
         for (AssertionResult ar : result.getAssertionResults()) {
             if (ar.isFailure() || ar.isError()) {
@@ -121,8 +163,10 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         int activeThreads = JMeterContextService.getNumberOfThreads();
         int finishedThreads = startedThreads - activeThreads;
 
+        // Determine if this sample is from a transaction controller by label prefix
         boolean isTransactionController = label.startsWith(transactionControllerPrefix);
 
+        // Format the JSON document for Elasticsearch
         String json = String.format(
                 "{" +
                         "\"threadName\":\"%s\"," +
@@ -141,7 +185,7 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
                         "\"finishedThreads\":%d," +
                         "\"environment\":\"%s\"," +
                         "\"type\":\"%s\"," +
-                        "\"run_id\":\"%s\"" +  // add run_id to JSON
+                        "\"run_id\":\"%s\"" +
                         "}",
                 safe(result.getThreadName()),
                 safe(label),
@@ -159,9 +203,10 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
                 finishedThreads,
                 safe(environment),
                 safe(type),
-                runId // insert the GUID
+                runId
         );
 
+        // Add the JSON document to the batch and flush if batch size reached
         synchronized (jsonBatch) {
             jsonBatch.add(json);
             if (jsonBatch.size() >= batchSize) {
@@ -169,12 +214,16 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
             }
         }
 
-        // process children
+        // Recursively process sub-results (children)
         for (SampleResult child : result.getSubResults()) {
             processSampleResultRecursively(child, label);
         }
     }
 
+    /**
+     * Sends the accumulated batch of JSON documents to Elasticsearch via the Bulk API.
+     * Clears the batch after sending.
+     */
     private void flushBatch() {
         if (jsonBatch.isEmpty()) {
             return;
@@ -183,6 +232,7 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         try {
             StringBuilder bulkPayload = new StringBuilder();
             for (String doc : jsonBatch) {
+                // Add the bulk API index action line before each document
                 bulkPayload.append("{\"index\":{}}\n");
                 bulkPayload.append(doc).append("\n");
             }
@@ -205,10 +255,17 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         } catch (Exception e) {
             log.error("Error sending batch to Elasticsearch: {}", e.getMessage(), e);
         } finally {
+            // Clear the batch regardless of success or failure
             jsonBatch.clear();
         }
     }
 
+    /**
+     * Flushes any remaining batched documents and closes the HTTP client on test teardown.
+     *
+     * @param context BackendListenerContext (not used here).
+     * @throws Exception if HTTP client closing fails.
+     */
     @Override
     public void teardownTest(BackendListenerContext context) throws Exception {
         flushBatch();
@@ -217,6 +274,13 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         }
     }
 
+    /**
+     * Helper method to safely escape strings for JSON insertion.
+     * Replaces quotes and newlines.
+     *
+     * @param s input string (may be null)
+     * @return safe string for JSON or empty string if null
+     */
     private String safe(String s) {
         return s == null ? "" : s.replace("\"", "\\\"").replace("\n", " ");
     }
