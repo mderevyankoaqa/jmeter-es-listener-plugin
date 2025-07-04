@@ -14,15 +14,15 @@ A custom JMeter Backend Listener that pushes sample results to Elasticsearch usi
 
 ## Configuration Parameters
 
-| Parameter                        | Description                                                  | Default                      |
-|----------------------------------|--------------------------------------------------------------|------------------------------|
-| `es.url`                         | Elasticsearch Bulk API endpoint                              | `http://localhost:9200/_bulk` |
-| `es.api.key`                     | Your Elasticsearch API Key                                   | `YOUR_API_KEY`               |
-| `environment`                    | Environment name (e.g. `staging`, `prod`)                    | `perf_cmp_2`                 |
-| `type`                           | Type of test or component                                    | `api`                        |
-| `transaction.controller.prefix`  | Prefix to identify transaction controllers                   | `TC`                         |
-| `batch.size`                     | Number of samples to send per bulk request                   | `10`                         |
-| `save.response.body`             | Controls saving response body (`always`, `onError`, `off`)   | `onError`                    |
+| Parameter                        | Description                                                                            | Default                       |
+|----------------------------------|----------------------------------------------------------------------------------------|-------------------------------|
+| `es.url`                         | Elasticsearch Bulk API endpoint                                                        | `http://localhost:9200/_bulk` |
+| `es.api.key`                     | Your Elasticsearch API Key                                                             | `YOUR_API_KEY`                |
+| `environment`                    | Environment name (e.g. `staging`, `prod`)                                              | `perf_cmp_2`                  |
+| `type`                           | Type of test or component                                                              | `api`                         |
+| `transaction.controller.prefix`  | Prefix to identify transaction controllers, the exmaple of the full name is 'TC_Login' | `TC`                          |
+| `batch.size`                     | Number of samples to send per bulk request                                             | `1000`                        |
+| `save.response.body`             | Controls saving response body (`always`, `onError`, `off`)                             | `onError`                     |
 
 ## How it Works
 

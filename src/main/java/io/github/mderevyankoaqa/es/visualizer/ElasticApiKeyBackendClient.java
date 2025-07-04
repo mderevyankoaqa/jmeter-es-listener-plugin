@@ -87,7 +87,7 @@ public class ElasticApiKeyBackendClient extends AbstractBackendListenerClient {
         this.environment = context.getParameter(ENVIRONMENT);
         this.type = context.getParameter(TYPE);
         this.transactionControllerPrefix = context.getParameter(TRANSACTION_PREFIX);
-        this.batchSize = context.getIntParameter(BATCH_SIZE, 10);
+        this.batchSize = context.getIntParameter(BATCH_SIZE, 1000);
         this.saveResponseBodyMode = context.getParameter(SAVE_RESPONSE_BODY, "onError");
 
         // Generate a unique run ID for this test execution
